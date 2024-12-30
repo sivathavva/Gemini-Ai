@@ -1,5 +1,7 @@
+# app.py
 import time
 import streamlit as st
+import plotly.express as px
 from gemini_calls import (
     generate_sql_from_gemini,
     execute_sql,
@@ -18,6 +20,7 @@ st.sidebar.checkbox("Show SQL", value=True, key="show_sql")
 st.sidebar.checkbox("Show Table", value=True, key="show_table")
 st.sidebar.checkbox("Show Summary", value=True, key="show_summary")
 st.sidebar.checkbox("Show Follow-up Questions", value=True, key="show_followup")
+st.sidebar.checkbox("Show Plotly Chart", value=False, key="show_plotly")
 st.sidebar.button("Reset", on_click=lambda: set_question(None), use_container_width=True)
 
 # Main App
@@ -43,35 +46,45 @@ if my_question:
     user_message = st.chat_message("user")
     user_message.write(f"{my_question}")
 
-    sql = generate_sql_from_gemini(my_question)
-    if sql:
-        if validate_sql(sql=sql):
-            if st.session_state.get("show_sql", True):
-                assistant_message_sql = st.chat_message("assistant", avatar=avatar_url)
-                assistant_message_sql.code(sql, language="sql", line_numbers=True)
+    try:
+        sql = generate_sql_from_gemini(my_question)
+        if sql:
+            if validate_sql(sql=sql):
+                if st.session_state.get("show_sql", True):
+                    assistant_message_sql = st.chat_message("assistant", avatar=avatar_url)
+                    assistant_message_sql.code(sql, language="sql", line_numbers=True)
+            else:
+                st.chat_message("assistant", avatar=avatar_url).error("Generated SQL is invalid.")
+                st.stop()
+
+            df = execute_sql(sql=sql)
+            if df is not None:
+                st.session_state["df"] = df
+
+            if st.session_state.get("df") is not None:
+                df = st.session_state["df"]
+                if st.session_state.get("show_table", True):
+                    st.chat_message("assistant", avatar=avatar_url).dataframe(df.head(10) if len(df) > 10 else df)
+
+                if st.session_state.get("show_summary", True):
+                    summary = generate_summary(my_question, df)
+                    if summary:
+                        st.chat_message("assistant", avatar=avatar_url).text(summary)
+
+                if st.session_state.get("show_followup", True):
+                    followups = generate_followup_questions(my_question, sql, df)
+                    if followups:
+                        for followup in followups[:5]:
+                            st.button(followup, on_click=set_question, args=(followup,))
+
+                if st.session_state.get("show_plotly", False):
+                    try:
+                        fig = px.histogram(df, x=df.columns[0], y=df.columns[1], title="Sample Plotly Chart")
+                        st.plotly_chart(fig)
+                    except Exception as e:
+                        st.chat_message("assistant", avatar=avatar_url).error(f"Error generating plot: {e}")
+
         else:
-            st.chat_message("assistant", avatar=avatar_url).write(sql)
-            st.stop()
-
-        df = execute_sql(sql=sql)
-        if df is not None:
-            st.session_state["df"] = df
-
-        if st.session_state.get("df") is not None:
-            df = st.session_state["df"]
-            if st.session_state.get("show_table", True):
-                st.chat_message("assistant", avatar=avatar_url).dataframe(df.head(10) if len(df) > 10 else df)
-
-            if st.session_state.get("show_summary", True):
-                summary = generate_summary(my_question, df)
-                if summary:
-                    st.chat_message("assistant", avatar=avatar_url).text(summary)
-
-            if st.session_state.get("show_followup", True):
-                followups = generate_followup_questions(my_question, sql, df)
-                if followups:
-                    for followup in followups[:5]:
-                        st.button(followup, on_click=set_question, args=(followup,))
-    else:
-        st.chat_message("assistant", avatar=avatar_url).error("Failed to generate SQL.")
-
+            st.chat_message("assistant", avatar=avatar_url).error("Failed to generate SQL.")
+    except Exception as e:
+        st.chat_message("assistant", avatar=avatar_url).error(f"Error: {e}")
